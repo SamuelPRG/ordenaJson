@@ -18,30 +18,30 @@ import (
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 type TestLog struct {
-	Timestamp     string         `json:"timestamp"`
-	TestName      string         `json:"test_name"`
-	Input         TestInput      `json:"input"`
+	FechaTest     string         `json:"fecha_test"`
+	NombreTest    string         `json:"nombre_test"`
+	IngresoDatos  TestInput      `json:"ingreso_datos"`
 	Procesos      []string       `json:"procesos"`
-	Expected      ExpectedResult `json:"expected"`
-	Actual        ActualResult   `json:"actual"`
-	Status        string         `json:"status"`
-	ExecutionTime string         `json:"execution_time,omitempty"`
+	ResultadosEsperados        ResultadosEsperados `json:"resultados_esperados"`
+	ResultadosObtenidos        ResultadosObtenidos   `json:"resultados_obtenidos"`
+	EstadoTest        string         `json:"estado_test"`
+	TiempoDeEjecucion string         `json:"tiempo_ejecucion,omitempty"`
 }
 
 type TestInput struct {
 	RawJSON string      `json:"raw_json,omitempty"`
-	Params  interface{} `json:"params,omitempty"`
+	Parametros  interface{} `json:"parametros,omitempty"`
 }
 
-type ExpectedResult struct {
-	OrderedKeys []string    `json:"ordered_keys,omitempty"`
-	ErrorType   string      `json:"error_type,omitempty"`
+type ResultadosEsperados struct {
+	ClavesOrdenadas []string    `json:"claves_ordenadas,omitempty"`
+	TipoError   string      `json:"tipo_error,omitempty"`
 	CustomCheck interface{} `json:"custom_check,omitempty"`
 }
 
-type ActualResult struct {
-	OrderedKeys []string `json:"ordered_keys,omitempty"`
-	OutputJSON  string   `json:"output_json,omitempty"`
+type ResultadosObtenidos struct {
+	ClavesOrdenadas []string `json:"claves_ordenadas,omitempty"`
+	JsonSalida  string   `json:"json_salida,omitempty"`
 	Error       string   `json:"error,omitempty"`
 }
 
@@ -50,11 +50,11 @@ type TestLogger struct {
 	logs  map[string]*TestLog
 }
 
-var globalLogger = &TestLogger{
+var registradorGlobal = &TestLogger{
 	logs: make(map[string]*TestLog),
 }
 
-func (tl *TestLogger) InitializeTest(testName string, input interface{}) {
+func (tl *TestLogger) IniciadorTest(testName string, input interface{}) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	
@@ -69,18 +69,18 @@ func (tl *TestLogger) InitializeTest(testName string, input interface{}) {
 	}
 
 	tl.logs[testName] = &TestLog{
-		Timestamp: time.Now().Format(time.RFC3339Nano),
-		TestName:  testName,
-		Input: TestInput{
+		FechaTest: time.Now().Format(time.RFC3339Nano),
+		NombreTest:  testName,
+		IngresoDatos: TestInput{
 			RawJSON: rawJSON,
-			Params:  input,
+			Parametros:  input,
 		},
 		Procesos: []string{"Test inicializado"},
-		Status:   "En ejecución",
+		EstadoTest:   "En ejecución",
 	}
 }
 
-func (tl *TestLogger) AddProcess(testName, process string) {
+func (tl *TestLogger) AgregarProceso(testName, process string) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	
@@ -89,27 +89,27 @@ func (tl *TestLogger) AddProcess(testName, process string) {
 	}
 }
 
-func (tl *TestLogger) RecordResult(testName string, actual ActualResult, status string) {
+func (tl *TestLogger) GuardarResultado(testName string, actual ResultadosObtenidos, status string) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	
 	if logEntry, exists := tl.logs[testName]; exists {
-		logEntry.Actual = actual
-		logEntry.Status = status
-		logEntry.ExecutionTime = time.Since(time.Now()).String()
+		logEntry.ResultadosObtenidos = actual
+		logEntry.EstadoTest = status
+		logEntry.TiempoDeEjecucion = time.Since(time.Now()).String()
 	}
 }
 
-func (tl *TestLogger) SetExpected(testName string, expected ExpectedResult) {
+func (tl *TestLogger) ConfigResultadoEsperado(testName string, expected ResultadosEsperados) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	
 	if logEntry, exists := tl.logs[testName]; exists {
-		logEntry.Expected = expected
+		logEntry.ResultadosEsperados = expected
 	}
 }
 
-func (tl *TestLogger) WriteLogsToFile() error {
+func (tl *TestLogger) CrearArchivoLog() error {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 
@@ -138,7 +138,7 @@ type DocumentMetadata struct {
 
 var keyRegex = regexp.MustCompile(`"([^"]+)":`)
 
-func extractKeys(orderedJSON string) []string {
+func extraerClavesJSON(orderedJSON string) []string {
 	matches := keyRegex.FindAllStringSubmatch(orderedJSON, -1)
 	keys := make([]string, 0, len(matches))
 	for _, m := range matches {
@@ -190,23 +190,23 @@ func TestOrdenarJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			testName := t.Name()
 			startTime := time.Now()
-			globalLogger.InitializeTest(testName, tt.input)
-			globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: tt.expected})
+			registradorGlobal.IniciadorTest(testName, tt.input)
+			registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: tt.expected})
 
-			globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON")
+			registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON")
 			got, err := ordenJson.OrdenarJSON(tt.input)
 
-			var actual ActualResult
+			var actual ResultadosObtenidos
 			if err != nil {
-				actual = ActualResult{Error: err.Error()}
-				globalLogger.RecordResult(testName, actual, "Fallido")
+				actual = ResultadosObtenidos{Error: err.Error()}
+				registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 				t.Fatalf("OrdenarJSON() error = %v", err)
 			}
 
-			keys := extractKeys(got)
-			actual = ActualResult{
-				OrderedKeys: keys,
-				OutputJSON:  got,
+			keys := extraerClavesJSON(got)
+			actual = ResultadosObtenidos{
+				ClavesOrdenadas: keys,
+				JsonSalida:  got,
 			}
 
 			status := "Completado"
@@ -215,8 +215,8 @@ func TestOrdenarJSON(t *testing.T) {
 				t.Errorf("Orden de claves incorrecto")
 			}
 
-			globalLogger.RecordResult(testName, actual, status)
-			globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+			registradorGlobal.GuardarResultado(testName, actual, status)
+			registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 		})
 	}
 }
@@ -238,23 +238,23 @@ func TestOrdenarDocumentoMetadata(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, metadata)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
+	registradorGlobal.IniciadorTest(testName, metadata)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expectedOrder})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarDocumentoMetadata")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarDocumentoMetadata")
 	orderedJSON, err := ordenJson.OrdenarDocumentoMetadata(metadata)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatalf("OrdenarDocumentoMetadata() error = %v", err)
 	}
 
-	keys := extractKeys(orderedJSON)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  orderedJSON,
+	keys := extraerClavesJSON(orderedJSON)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  orderedJSON,
 	}
 
 	status := "Completado"
@@ -263,8 +263,8 @@ func TestOrdenarDocumentoMetadata(t *testing.T) {
 		t.Errorf("Orden de claves incorrecto")
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
 func TestOrdenarMapaComoDocumentoMetadata(t *testing.T) {
@@ -284,23 +284,23 @@ func TestOrdenarMapaComoDocumentoMetadata(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, inputMap)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
+	registradorGlobal.IniciadorTest(testName, inputMap)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expectedOrder})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarMapaComoDocumentoMetadata")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarMapaComoDocumentoMetadata")
 	orderedJSON, err := ordenJson.OrdenarMapaComoDocumentoMetadata(inputMap)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatalf("OrdenarMapaComoDocumentoMetadata() error = %v", err)
 	}
 
-	keys := extractKeys(orderedJSON)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  orderedJSON,
+	keys := extraerClavesJSON(orderedJSON)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  orderedJSON,
 	}
 
 	status := "Completado"
@@ -309,73 +309,73 @@ func TestOrdenarMapaComoDocumentoMetadata(t *testing.T) {
 		t.Errorf("Orden de claves incorrecto")
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
-func TestOrdenarJSON_UnsupportedType(t *testing.T) {
+func TestOrdenarJSON_TipoDatoNoSoportado(t *testing.T) {
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, 123)
-	globalLogger.SetExpected(testName, ExpectedResult{ErrorType: "Tipo no soportado"})
+	registradorGlobal.IniciadorTest(testName, 123)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{TipoError: "Tipo no soportado"})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con tipo no soportado")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con tipo no soportado")
 	_, err := ordenJson.OrdenarJSON(123)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err == nil {
-		actual = ActualResult{Error: "Se esperaba error para tipo no soportado, pero no se produjo ninguno"}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: "Se esperaba error para tipo no soportado, pero no se produjo ninguno"}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Errorf("Se esperaba error para tipo no soportado, pero no se produjo ninguno")
 	} else {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Completado")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Completado")
 	}
 
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
-func TestOrdenarJSON_InvalidJSONString(t *testing.T) {
+func TestOrdenarJSON_JSON_Invalido(t *testing.T) {
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, "cadena no válida")
-	globalLogger.SetExpected(testName, ExpectedResult{ErrorType: "JSON inválido"})
+	registradorGlobal.IniciadorTest(testName, "cadena no válida")
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{TipoError: "JSON inválido"})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON inválido")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con JSON inválido")
 	_, err := ordenJson.OrdenarJSON("cadena no válida")
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err == nil {
-		actual = ActualResult{Error: "Se esperaba error para JSON inválido, pero no se produjo ninguno"}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: "Se esperaba error para JSON inválido, pero no se produjo ninguno"}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Errorf("Se esperaba error para JSON inválido, pero no se produjo ninguno")
 	} else {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Completado")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Completado")
 	}
 
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
-func TestOrdenarJSON_EmptyJSON(t *testing.T) {
+func TestOrdenarJSON_JSON_Vacio(t *testing.T) {
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, "{}")
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: []string{}})
+	registradorGlobal.IniciadorTest(testName, "{}")
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: []string{}})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON vacío")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con JSON vacío")
 	result, err := ordenJson.OrdenarJSON("{}")
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatalf("Error inesperado: %v", err)
 	}
 
 	trimmed := strings.TrimSpace(result)
-	actual = ActualResult{
-		OutputJSON: trimmed,
+	actual = ResultadosObtenidos{
+		JsonSalida: trimmed,
 	}
 
 	status := "Completado"
@@ -384,11 +384,11 @@ func TestOrdenarJSON_EmptyJSON(t *testing.T) {
 		t.Errorf("Se esperaba {} pero se obtuvo %s", trimmed)
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
-func TestOrdenarJSON_ExtraFields(t *testing.T) {
+func TestOrdenarJSON_Campos_Extra(t *testing.T) {
 	input := `{
 		"extra:field1": "value1",
 		"tanner:tipo-documento": "docType",
@@ -401,23 +401,23 @@ func TestOrdenarJSON_ExtraFields(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, input)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedDefined})
+	registradorGlobal.IniciadorTest(testName, input)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expectedDefined})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con campos extra")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con campos extra")
 	result, err := ordenJson.OrdenarJSON(input)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatalf("Error inesperado: %v", err)
 	}
 
-	keys := extractKeys(result)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  result,
+	keys := extraerClavesJSON(result)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  result,
 	}
 
 	status := "Completado"
@@ -445,11 +445,11 @@ func TestOrdenarJSON_ExtraFields(t *testing.T) {
 		}
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
-func TestOrdenarJSON_MapExtensive(t *testing.T) {
+func TestOrdenarJSON_Map_Extenso(t *testing.T) {
 	inputMap := map[string]interface{}{
 		"cm:description":       "desc",
 		"tanner:estado-visado": "aprobado",
@@ -465,9 +465,9 @@ func TestOrdenarJSON_MapExtensive(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, inputMap)
-	globalLogger.SetExpected(testName, ExpectedResult{
-		OrderedKeys: []string{
+	registradorGlobal.IniciadorTest(testName, inputMap)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{
+		ClavesOrdenadas: []string{
 			"tanner:tipo-documento",
 			"tanner:estado-visado",
 			"tanner:fecha-carga",
@@ -479,26 +479,26 @@ func TestOrdenarJSON_MapExtensive(t *testing.T) {
 		},
 	})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con mapa extenso")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con mapa extenso")
 	result, err := ordenJson.OrdenarJSON(inputMap)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatalf("Error inesperado: %v", err)
 	}
 
-	keys := extractKeys(result)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  result,
+	keys := extraerClavesJSON(result)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  result,
 	}
 
 	var definedKeys []string
 	var extraKeys []string
 	for _, key := range keys {
-		if getOrder(key) < len(ordenJson.OrdenCampos) {
+		if obtenerOrden(key) < len(ordenJson.OrdenCampos) {
 			definedKeys = append(definedKeys, key)
 		} else {
 			extraKeys = append(extraKeys, key)
@@ -506,9 +506,9 @@ func TestOrdenarJSON_MapExtensive(t *testing.T) {
 	}
 
 	status := "Completado"
-	if !reflect.DeepEqual(definedKeys, globalLogger.logs[testName].Expected.OrderedKeys) {
+	if !reflect.DeepEqual(definedKeys, registradorGlobal.logs[testName].ResultadosEsperados.ClavesOrdenadas) {
 		status = "Fallido"
-		t.Errorf("Se esperaba el orden definido %v, pero se obtuvo %v", globalLogger.logs[testName].Expected.OrderedKeys, definedKeys)
+		t.Errorf("Se esperaba el orden definido %v, pero se obtuvo %v", registradorGlobal.logs[testName].ResultadosEsperados.ClavesOrdenadas, definedKeys)
 	}
 
 	extraSet := map[string]bool{"extra:1": true, "extra:2": true}
@@ -524,11 +524,11 @@ func TestOrdenarJSON_MapExtensive(t *testing.T) {
 		}
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
-func getOrder(campo string) int {
+func obtenerOrden(campo string) int {
 	for i, c := range ordenJson.OrdenCampos {
 		if c == campo {
 			return i
@@ -547,23 +547,23 @@ func TestCaracteresEspecialesEnValores(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, input)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expected})
+	registradorGlobal.IniciadorTest(testName, input)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expected})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con caracteres especiales")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con caracteres especiales")
 	got, err := ordenJson.OrdenarJSON(input)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	keys := extractKeys(got)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  got,
+	keys := extraerClavesJSON(got)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  got,
 	}
 
 	status := "Completado"
@@ -577,8 +577,8 @@ func TestCaracteresEspecialesEnValores(t *testing.T) {
 		t.Error("Caracteres especiales mal escapados")
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
 func TestJSONGrande(t *testing.T) {
@@ -600,23 +600,23 @@ func TestJSONGrande(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, input)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: ordenJson.OrdenCampos})
+	registradorGlobal.IniciadorTest(testName, input)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: ordenJson.OrdenCampos})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON grande")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con JSON grande")
 	got, err := ordenJson.OrdenarJSON(input)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	keys := extractKeys(got)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  got,
+	keys := extraerClavesJSON(got)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  got,
 	}
 
 	status := "Completado"
@@ -630,8 +630,8 @@ func TestJSONGrande(t *testing.T) {
 		}
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
 func TestCamposNoDefinidos(t *testing.T) {
@@ -649,23 +649,23 @@ func TestCamposNoDefinidos(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, input)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
+	registradorGlobal.IniciadorTest(testName, input)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expectedOrder})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con campos no definidos")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con campos no definidos")
 	got, err := ordenJson.OrdenarJSON(input)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	keys := extractKeys(got)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  got,
+	keys := extraerClavesJSON(got)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  got,
 	}
 
 	status := "Completado"
@@ -674,8 +674,8 @@ func TestCamposNoDefinidos(t *testing.T) {
 		t.Errorf("Orden incorrecto. Esperado: %v, Obtenido: %v", expectedOrder, keys)
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
 func TestTiposDeDatosVariados(t *testing.T) {
@@ -690,23 +690,23 @@ func TestTiposDeDatosVariados(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, input)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedKeys})
+	registradorGlobal.IniciadorTest(testName, input)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expectedKeys})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con tipos de datos variados")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con tipos de datos variados")
 	got, err := ordenJson.OrdenarJSON(input)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	keys := extractKeys(got)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  got,
+	keys := extraerClavesJSON(got)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  got,
 	}
 
 	status := "Completado"
@@ -720,8 +720,8 @@ func TestTiposDeDatosVariados(t *testing.T) {
 		t.Error("Valores no serializados correctamente")
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
 func TestJSONMalformado(t *testing.T) {
@@ -739,28 +739,28 @@ func TestJSONMalformado(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			testName := t.Name()
 			startTime := time.Now()
-			globalLogger.InitializeTest(testName, tt.input)
-			globalLogger.SetExpected(testName, ExpectedResult{ErrorType: "JSON malformado"})
+			registradorGlobal.IniciadorTest(testName, tt.input)
+			registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{TipoError: "JSON malformado"})
 
-			globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON malformado")
+			registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarJSON con JSON malformado")
 			_, err := ordenJson.OrdenarJSON(tt.input)
 
-			var actual ActualResult
+			var actual ResultadosObtenidos
 			if err == nil {
-				actual = ActualResult{Error: "Se esperaba un error por JSON malformado"}
-				globalLogger.RecordResult(testName, actual, "Fallido")
+				actual = ResultadosObtenidos{Error: "Se esperaba un error por JSON malformado"}
+				registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 				t.Error("Se esperaba un error por JSON malformado")
 			} else {
-				actual = ActualResult{Error: err.Error()}
-				globalLogger.RecordResult(testName, actual, "Completado")
+				actual = ResultadosObtenidos{Error: err.Error()}
+				registradorGlobal.GuardarResultado(testName, actual, "Completado")
 			}
 
-			globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+			registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 		})
 	}
 }
 
-func TestCamposVacios(t *testing.T) {
+func TestJSONCamposVacios(t *testing.T) {
 	metadata := ordenJson.DocumentMetadata{
 		TipoDocumento: "",
 		RUTCliente:   "123",
@@ -772,23 +772,23 @@ func TestCamposVacios(t *testing.T) {
 
 	testName := t.Name()
 	startTime := time.Now()
-	globalLogger.InitializeTest(testName, metadata)
-	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
+	registradorGlobal.IniciadorTest(testName, metadata)
+	registradorGlobal.ConfigResultadoEsperado(testName, ResultadosEsperados{ClavesOrdenadas: expectedOrder})
 
-	globalLogger.AddProcess(testName, "Ejecutando OrdenarDocumentoMetadata con campos vacíos")
+	registradorGlobal.AgregarProceso(testName, "Ejecutando OrdenarDocumentoMetadata con campos vacíos")
 	got, err := ordenJson.OrdenarDocumentoMetadata(metadata)
 
-	var actual ActualResult
+	var actual ResultadosObtenidos
 	if err != nil {
-		actual = ActualResult{Error: err.Error()}
-		globalLogger.RecordResult(testName, actual, "Fallido")
+		actual = ResultadosObtenidos{Error: err.Error()}
+		registradorGlobal.GuardarResultado(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	keys := extractKeys(got)
-	actual = ActualResult{
-		OrderedKeys: keys,
-		OutputJSON:  got,
+	keys := extraerClavesJSON(got)
+	actual = ResultadosObtenidos{
+		ClavesOrdenadas: keys,
+		JsonSalida:  got,
 	}
 
 	status := "Completado"
@@ -797,8 +797,8 @@ func TestCamposVacios(t *testing.T) {
 		t.Errorf("Campos vacíos no filtrados. Claves: %v", keys)
 	}
 
-	globalLogger.RecordResult(testName, actual, status)
-	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
+	registradorGlobal.GuardarResultado(testName, actual, status)
+	registradorGlobal.logs[testName].TiempoDeEjecucion = time.Since(startTime).String()
 }
 
 func BenchmarkOrdenarJSON(b *testing.B) {
@@ -816,7 +816,7 @@ func BenchmarkOrdenarJSON(b *testing.B) {
 
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if err := globalLogger.WriteLogsToFile(); err != nil {
+	if err := registradorGlobal.CrearArchivoLog(); err != nil {
 		fmt.Printf("Error escribiendo logs: %v\n", err)
 	}
 	os.Exit(code)
