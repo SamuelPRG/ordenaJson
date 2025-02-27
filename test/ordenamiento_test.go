@@ -17,41 +17,108 @@ import (
 // ~ ESTRUCTURAS PARA REGISTRO DE EVENTOS ~
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Evento define la estructura de un registro de evento.
-type Evento struct {
-	Timestamp string                 `json:"timestamp"`   // Fecha y hora en RFC3339
-	TestName  string                 `json:"testName"`    // Nombre del test
-	EventType string                 `json:"eventType"`   // INFO, DEBUG, ERROR
-	Details   map[string]interface{} `json:"details"`     // Datos adicionales
+type TestLog struct {
+	Timestamp     string         `json:"timestamp"`
+	TestName      string         `json:"test_name"`
+	Input         TestInput      `json:"input"`
+	Procesos      []string       `json:"procesos"`
+	Expected      ExpectedResult `json:"expected"`
+	Actual        ActualResult   `json:"actual"`
+	Status        string         `json:"status"`
+	ExecutionTime string         `json:"execution_time,omitempty"`
 }
 
-// TestLogger centraliza el registro de eventos durante las pruebas.
+type TestInput struct {
+	RawJSON string      `json:"raw_json,omitempty"`
+	Params  interface{} `json:"params,omitempty"`
+}
+
+type ExpectedResult struct {
+	OrderedKeys []string    `json:"ordered_keys,omitempty"`
+	ErrorType   string      `json:"error_type,omitempty"`
+	CustomCheck interface{} `json:"custom_check,omitempty"`
+}
+
+type ActualResult struct {
+	OrderedKeys []string `json:"ordered_keys,omitempty"`
+	OutputJSON  string   `json:"output_json,omitempty"`
+	Error       string   `json:"error,omitempty"`
+}
+
 type TestLogger struct {
-	mu      sync.Mutex
-	eventos []Evento
+	mu    sync.Mutex
+	logs  map[string]*TestLog
 }
 
-var globalLogger = &TestLogger{}
+var globalLogger = &TestLogger{
+	logs: make(map[string]*TestLog),
+}
 
-// Log registra un evento de manera segura para concurrencia.
-func (tl *TestLogger) Log(testName, eventType string, details map[string]interface{}) {
+func (tl *TestLogger) InitializeTest(testName string, input interface{}) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
+	
+	var rawJSON string
+	switch v := input.(type) {
+	case string:
+		rawJSON = v
+	case map[string]interface{}:
+		if jsonStr, err := json.Marshal(v); err == nil {
+			rawJSON = string(jsonStr)
+		}
+	}
 
-	tl.eventos = append(tl.eventos, Evento{
+	tl.logs[testName] = &TestLog{
 		Timestamp: time.Now().Format(time.RFC3339Nano),
 		TestName:  testName,
-		EventType: eventType,
-		Details:   details,
-	})
+		Input: TestInput{
+			RawJSON: rawJSON,
+			Params:  input,
+		},
+		Procesos: []string{"Test inicializado"},
+		Status:   "En ejecución",
+	}
 }
 
-// WriteLogsToFile escribe todos los eventos en un archivo JSON.
+func (tl *TestLogger) AddProcess(testName, process string) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	
+	if logEntry, exists := tl.logs[testName]; exists {
+		logEntry.Procesos = append(logEntry.Procesos, process)
+	}
+}
+
+func (tl *TestLogger) RecordResult(testName string, actual ActualResult, status string) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	
+	if logEntry, exists := tl.logs[testName]; exists {
+		logEntry.Actual = actual
+		logEntry.Status = status
+		logEntry.ExecutionTime = time.Since(time.Now()).String()
+	}
+}
+
+func (tl *TestLogger) SetExpected(testName string, expected ExpectedResult) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	
+	if logEntry, exists := tl.logs[testName]; exists {
+		logEntry.Expected = expected
+	}
+}
+
 func (tl *TestLogger) WriteLogsToFile() error {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 
-	file, err := json.MarshalIndent(tl.eventos, "", "  ")
+	logEntries := make([]TestLog, 0, len(tl.logs))
+	for _, entry := range tl.logs {
+		logEntries = append(logEntries, *entry)
+	}
+
+	file, err := json.MarshalIndent(logEntries, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -122,52 +189,34 @@ func TestOrdenarJSON(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			testName := t.Name()
+			startTime := time.Now()
+			globalLogger.InitializeTest(testName, tt.input)
+			globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: tt.expected})
 
-			// Registro: Inicio del test
-			globalLogger.Log(testName, "INFO", map[string]interface{}{
-				"accion":   "Inicio del test",
-				"input":    tt.input,
-				"expected": tt.expected,
-			})
-
-			// Registro: Ejecución de la función
-			globalLogger.Log(testName, "INFO", map[string]interface{}{
-				"accion": "Ejecutando OrdenarJSON",
-			})
-
+			globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON")
 			got, err := ordenJson.OrdenarJSON(tt.input)
 
+			var actual ActualResult
 			if err != nil {
-				// Registro: Error en la función
-				globalLogger.Log(testName, "ERROR", map[string]interface{}{
-					"accion": "OrdenarJSON falló",
-					"error":  err.Error(),
-				})
+				actual = ActualResult{Error: err.Error()}
+				globalLogger.RecordResult(testName, actual, "Fallido")
 				t.Fatalf("OrdenarJSON() error = %v", err)
 			}
 
-			// Registro: Resultado obtenido
-			globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-				"accion": "Resultado generado",
-				"output": got,
-			})
-
 			keys := extractKeys(got)
+			actual = ActualResult{
+				OrderedKeys: keys,
+				OutputJSON:  got,
+			}
+
+			status := "Completado"
 			if !reflect.DeepEqual(keys, tt.expected) {
-				// Registro: Error de aserción
-				globalLogger.Log(testName, "ERROR", map[string]interface{}{
-					"accion":   "Comparación de claves fallida",
-					"esperado": tt.expected,
-					"obtenido": keys,
-				})
+				status = "Fallido"
 				t.Errorf("Orden de claves incorrecto")
 			}
 
-			// Registro: Conclusión del test
-			globalLogger.Log(testName, "INFO", map[string]interface{}{
-				"accion": "Test finalizado",
-				"estado": "Éxito",
-			})
+			globalLogger.RecordResult(testName, actual, status)
+			globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 		})
 	}
 }
@@ -188,51 +237,34 @@ func TestOrdenarDocumentoMetadata(t *testing.T) {
 	}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, metadata)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion":   "Inicio del test",
-		"metadata": metadata,
-		"expected": expectedOrder,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarDocumentoMetadata",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarDocumentoMetadata")
 	orderedJSON, err := ordenJson.OrdenarDocumentoMetadata(metadata)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarDocumentoMetadata falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatalf("OrdenarDocumentoMetadata() error = %v", err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": orderedJSON,
-	})
-
 	keys := extractKeys(orderedJSON)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  orderedJSON,
+	}
+
+	status := "Completado"
 	if !reflect.DeepEqual(keys, expectedOrder) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Comparación de claves fallida",
-			"esperado": expectedOrder,
-			"obtenido": keys,
-		})
+		status = "Fallido"
 		t.Errorf("Orden de claves incorrecto")
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestOrdenarMapaComoDocumentoMetadata(t *testing.T) {
@@ -251,171 +283,109 @@ func TestOrdenarMapaComoDocumentoMetadata(t *testing.T) {
 	}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, inputMap)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion":   "Inicio del test",
-		"inputMap": inputMap,
-		"expected": expectedOrder,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarMapaComoDocumentoMetadata",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarMapaComoDocumentoMetadata")
 	orderedJSON, err := ordenJson.OrdenarMapaComoDocumentoMetadata(inputMap)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarMapaComoDocumentoMetadata falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatalf("OrdenarMapaComoDocumentoMetadata() error = %v", err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": orderedJSON,
-	})
-
 	keys := extractKeys(orderedJSON)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  orderedJSON,
+	}
+
+	status := "Completado"
 	if !reflect.DeepEqual(keys, expectedOrder) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Comparación de claves fallida",
-			"esperado": expectedOrder,
-			"obtenido": keys,
-		})
+		status = "Fallido"
 		t.Errorf("Orden de claves incorrecto")
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestOrdenarJSON_UnsupportedType(t *testing.T) {
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, 123)
+	globalLogger.SetExpected(testName, ExpectedResult{ErrorType: "Tipo no soportado"})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  123,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con tipo no soportado",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con tipo no soportado")
 	_, err := ordenJson.OrdenarJSON(123)
+
+	var actual ActualResult
 	if err == nil {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "Se esperaba error para tipo no soportado, pero no se produjo ninguno",
-		})
+		actual = ActualResult{Error: "Se esperaba error para tipo no soportado, pero no se produjo ninguno"}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Errorf("Se esperaba error para tipo no soportado, pero no se produjo ninguno")
 	} else {
-		// Registro: Error capturado
-		globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-			"accion": "Error capturado",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Completado")
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestOrdenarJSON_InvalidJSONString(t *testing.T) {
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, "cadena no válida")
+	globalLogger.SetExpected(testName, ExpectedResult{ErrorType: "JSON inválido"})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  "cadena no válida",
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con JSON inválido",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON inválido")
 	_, err := ordenJson.OrdenarJSON("cadena no válida")
+
+	var actual ActualResult
 	if err == nil {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "Se esperaba error para JSON inválido, pero no se produjo ninguno",
-		})
+		actual = ActualResult{Error: "Se esperaba error para JSON inválido, pero no se produjo ninguno"}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Errorf("Se esperaba error para JSON inválido, pero no se produjo ninguno")
 	} else {
-		// Registro: Error capturado
-		globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-			"accion": "Error capturado",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Completado")
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestOrdenarJSON_EmptyJSON(t *testing.T) {
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, "{}")
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: []string{}})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  "{}",
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con JSON vacío",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON vacío")
 	result, err := ordenJson.OrdenarJSON("{}")
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatalf("Error inesperado: %v", err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": result,
-	})
-
 	trimmed := strings.TrimSpace(result)
+	actual = ActualResult{
+		OutputJSON: trimmed,
+	}
+
+	status := "Completado"
 	if trimmed != "{}" {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Comparación de JSON fallida",
-			"esperado": "{}",
-			"obtenido": trimmed,
-		})
+		status = "Fallido"
 		t.Errorf("Se esperaba {} pero se obtuvo %s", trimmed)
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestOrdenarJSON_ExtraFields(t *testing.T) {
@@ -430,59 +400,39 @@ func TestOrdenarJSON_ExtraFields(t *testing.T) {
 	expectedDefined := []string{"tanner:tipo-documento", "tanner:rut-cliente", "cm:description"}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, input)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedDefined})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  input,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con campos extra",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con campos extra")
 	result, err := ordenJson.OrdenarJSON(input)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatalf("Error inesperado: %v", err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": result,
-	})
-
 	keys := extractKeys(result)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  result,
+	}
+
+	status := "Completado"
 	if len(keys) != 5 {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Número incorrecto de claves",
-			"esperado": 5,
-			"obtenido": len(keys),
-		})
+		status = "Fallido"
 		t.Fatalf("Se esperaban 5 llaves en total, pero se obtuvieron %d", len(keys))
 	}
 
 	for i, key := range expectedDefined {
 		if keys[i] != key {
-			// Registro: Error de aserción
-			globalLogger.Log(testName, "ERROR", map[string]interface{}{
-				"accion":   "Clave definida en posición incorrecta",
-				"esperado": key,
-				"obtenido": keys[i],
-				"posicion": i,
-			})
+			status = "Fallido"
 			t.Errorf("Se esperaba %s en la posición %d, pero se obtuvo %s", key, i, keys[i])
 		}
 	}
 
-	// Verificar campos extras
 	extras := []string{keys[3], keys[4]}
 	extraSet := map[string]bool{
 		"extra:field1": true,
@@ -490,20 +440,13 @@ func TestOrdenarJSON_ExtraFields(t *testing.T) {
 	}
 	for _, key := range extras {
 		if !extraSet[key] {
-			// Registro: Error de aserción
-			globalLogger.Log(testName, "ERROR", map[string]interface{}{
-				"accion":   "Campo extra inesperado",
-				"campo":    key,
-			})
+			status = "Fallido"
 			t.Errorf("Campo extra inesperado: %s", key)
 		}
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestOrdenarJSON_MapExtensive(t *testing.T) {
@@ -521,35 +464,36 @@ func TestOrdenarJSON_MapExtensive(t *testing.T) {
 	}
 
 	testName := t.Name()
-
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion":   "Inicio del test",
-		"inputMap": inputMap,
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, inputMap)
+	globalLogger.SetExpected(testName, ExpectedResult{
+		OrderedKeys: []string{
+			"tanner:tipo-documento",
+			"tanner:estado-visado",
+			"tanner:fecha-carga",
+			"tanner:nombre-doc",
+			"tanner:categorias",
+			"cm:title",
+			"cm:description",
+			"tanner:observaciones",
+		},
 	})
 
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con mapa extenso",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con mapa extenso")
 	result, err := ordenJson.OrdenarJSON(inputMap)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatalf("Error inesperado: %v", err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": result,
-	})
-
 	keys := extractKeys(result)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  result,
+	}
 
 	var definedKeys []string
 	var extraKeys []string
@@ -561,54 +505,27 @@ func TestOrdenarJSON_MapExtensive(t *testing.T) {
 		}
 	}
 
-	expectedDefined := []string{
-		"tanner:tipo-documento",
-		"tanner:estado-visado",
-		"tanner:fecha-carga",
-		"tanner:nombre-doc",
-		"tanner:categorias",
-		"cm:title",
-		"cm:description",
-		"tanner:observaciones",
-	}
-
-	if !reflect.DeepEqual(definedKeys, expectedDefined) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Orden de claves definidas incorrecto",
-			"esperado": expectedDefined,
-			"obtenido": definedKeys,
-		})
-		t.Errorf("Se esperaba el orden definido %v, pero se obtuvo %v", expectedDefined, definedKeys)
+	status := "Completado"
+	if !reflect.DeepEqual(definedKeys, globalLogger.logs[testName].Expected.OrderedKeys) {
+		status = "Fallido"
+		t.Errorf("Se esperaba el orden definido %v, pero se obtuvo %v", globalLogger.logs[testName].Expected.OrderedKeys, definedKeys)
 	}
 
 	extraSet := map[string]bool{"extra:1": true, "extra:2": true}
 	if len(extraKeys) != len(extraSet) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Número incorrecto de claves extras",
-			"esperado": len(extraSet),
-			"obtenido": len(extraKeys),
-		})
+		status = "Fallido"
 		t.Errorf("Se esperaban %d llaves extras, pero se obtuvieron %d", len(extraSet), len(extraKeys))
 	}
 
 	for _, key := range extraKeys {
 		if !extraSet[key] {
-			// Registro: Error de aserción
-			globalLogger.Log(testName, "ERROR", map[string]interface{}{
-				"accion":   "Llave extra inesperada",
-				"llave":    key,
-			})
+			status = "Fallido"
 			t.Errorf("Llave extra inesperada: %s", key)
 		}
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func getOrder(campo string) int {
@@ -629,64 +546,42 @@ func TestCaracteresEspecialesEnValores(t *testing.T) {
 	expected := []string{"tanner:tipo-documento", "cm:description"}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, input)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expected})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  input,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con caracteres especiales",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con caracteres especiales")
 	got, err := ordenJson.OrdenarJSON(input)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": got,
-	})
-
 	keys := extractKeys(got)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  got,
+	}
+
+	status := "Completado"
 	if !reflect.DeepEqual(keys, expected) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Comparación de claves fallida",
-			"esperado": expected,
-			"obtenido": keys,
-		})
+		status = "Fallido"
 		t.Errorf("Claves esperadas: %v, obtenidas: %v", expected, keys)
 	}
 
-	// Verificar que los valores no se corrompan
 	if !strings.Contains(got, `"a\\b\"cñ"`) || !strings.Contains(got, `"valor con \n salto de línea"`) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Caracteres especiales mal escapados",
-			"output":   got,
-		})
+		status = "Fallido"
 		t.Error("Caracteres especiales mal escapados")
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestJSONGrande(t *testing.T) {
-	// Generar un JSON con 100 campos (20 definidos + 80 aleatorios)
 	var sb strings.Builder
 	sb.WriteString("{")
 	for i := 0; i < 100; i++ {
@@ -694,7 +589,7 @@ func TestJSONGrande(t *testing.T) {
 			sb.WriteString(",")
 		}
 		key := fmt.Sprintf("campo%d", i)
-		if i < 20 { // Los primeros 20 están en OrdenCampos
+		if i < 20 {
 			key = ordenJson.OrdenCampos[i%len(ordenJson.OrdenCampos)]
 		}
 		sb.WriteString(fmt.Sprintf(`"%s": "valor%d"`, key, i))
@@ -704,57 +599,39 @@ func TestJSONGrande(t *testing.T) {
 	input := sb.String()
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, input)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: ordenJson.OrdenCampos})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  input,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con JSON grande",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON grande")
 	got, err := ordenJson.OrdenarJSON(input)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": got,
-	})
-
 	keys := extractKeys(got)
-	// Verificar que los primeros 20 campos están ordenados según OrdenCampos
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  got,
+	}
+
+	status := "Completado"
 	for i, key := range ordenJson.OrdenCampos {
 		if i >= 20 {
 			break
 		}
 		if keys[i] != key {
-			// Registro: Error de aserción
-			globalLogger.Log(testName, "ERROR", map[string]interface{}{
-				"accion":   "Clave en posición incorrecta",
-				"esperado": key,
-				"obtenido": keys[i],
-				"posicion": i,
-			})
+			status = "Fallido"
 			t.Errorf("Posición %d: esperado %s, obtenido %s", i, key, keys[i])
 		}
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestCamposNoDefinidos(t *testing.T) {
@@ -767,54 +644,38 @@ func TestCamposNoDefinidos(t *testing.T) {
 	expectedOrder := []string{
 		"tanner:rut-cliente",
 		"zzz",
-		"aaa", // Los no definidos mantienen su orden relativo
+		"aaa",
 	}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, input)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  input,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con campos no definidos",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con campos no definidos")
 	got, err := ordenJson.OrdenarJSON(input)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": got,
-	})
-
 	keys := extractKeys(got)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  got,
+	}
+
+	status := "Completado"
 	if !reflect.DeepEqual(keys, expectedOrder) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Orden incorrecto",
-			"esperado": expectedOrder,
-			"obtenido": keys,
-		})
+		status = "Fallido"
 		t.Errorf("Orden incorrecto. Esperado: %v, Obtenido: %v", expectedOrder, keys)
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestTiposDeDatosVariados(t *testing.T) {
@@ -828,60 +689,39 @@ func TestTiposDeDatosVariados(t *testing.T) {
 	expectedKeys := []string{"tanner:tipo-documento", "tanner:origen", "cm:title", "cm:versionLabel"}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, input)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedKeys})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Inicio del test",
-		"input":  input,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarJSON con tipos de datos variados",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con tipos de datos variados")
 	got, err := ordenJson.OrdenarJSON(input)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarJSON falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": got,
-	})
-
 	keys := extractKeys(got)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  got,
+	}
+
+	status := "Completado"
 	if !reflect.DeepEqual(keys, expectedKeys) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Orden de claves incorrecto",
-			"esperado": expectedKeys,
-			"obtenido": keys,
-		})
+		status = "Fallido"
 		t.Errorf("Orden de claves incorrecto: %v", keys)
 	}
 
-	// Validar tipos
 	if !strings.Contains(got, `123`) || !strings.Contains(got, `true`) || !strings.Contains(got, `null`) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Valores no serializados correctamente",
-			"output":   got,
-		})
+		status = "Fallido"
 		t.Error("Valores no serializados correctamente")
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func TestJSONMalformado(t *testing.T) {
@@ -898,97 +738,67 @@ func TestJSONMalformado(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			testName := t.Name()
+			startTime := time.Now()
+			globalLogger.InitializeTest(testName, tt.input)
+			globalLogger.SetExpected(testName, ExpectedResult{ErrorType: "JSON malformado"})
 
-			// Registro: Inicio del test
-			globalLogger.Log(testName, "INFO", map[string]interface{}{
-				"accion": "Inicio del test",
-				"input":  tt.input,
-			})
-
-			// Registro: Ejecución de la función
-			globalLogger.Log(testName, "INFO", map[string]interface{}{
-				"accion": "Ejecutando OrdenarJSON con JSON malformado",
-			})
-
+			globalLogger.AddProcess(testName, "Ejecutando OrdenarJSON con JSON malformado")
 			_, err := ordenJson.OrdenarJSON(tt.input)
+
+			var actual ActualResult
 			if err == nil {
-				// Registro: Error de aserción
-				globalLogger.Log(testName, "ERROR", map[string]interface{}{
-					"accion": "Se esperaba un error por JSON malformado",
-				})
+				actual = ActualResult{Error: "Se esperaba un error por JSON malformado"}
+				globalLogger.RecordResult(testName, actual, "Fallido")
 				t.Error("Se esperaba un error por JSON malformado")
 			} else {
-				// Registro: Error capturado
-				globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-					"accion": "Error capturado",
-					"error":  err.Error(),
-				})
+				actual = ActualResult{Error: err.Error()}
+				globalLogger.RecordResult(testName, actual, "Completado")
 			}
 
-			// Registro: Conclusión del test
-			globalLogger.Log(testName, "INFO", map[string]interface{}{
-				"accion": "Test finalizado",
-				"estado": "Éxito",
-			})
+			globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 		})
 	}
 }
 
 func TestCamposVacios(t *testing.T) {
 	metadata := ordenJson.DocumentMetadata{
-		TipoDocumento: "", // Vacío (no debe aparecer)
+		TipoDocumento: "",
 		RUTCliente:   "123",
-		CmTitle:      "", // Vacío (no debe aparecer)
+		CmTitle:      "",
 		Origen:       "central",
 	}
 
 	expectedOrder := []string{"tanner:rut-cliente", "tanner:origen"}
 
 	testName := t.Name()
+	startTime := time.Now()
+	globalLogger.InitializeTest(testName, metadata)
+	globalLogger.SetExpected(testName, ExpectedResult{OrderedKeys: expectedOrder})
 
-	// Registro: Inicio del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion":   "Inicio del test",
-		"metadata": metadata,
-	})
-
-	// Registro: Ejecución de la función
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Ejecutando OrdenarDocumentoMetadata con campos vacíos",
-	})
-
+	globalLogger.AddProcess(testName, "Ejecutando OrdenarDocumentoMetadata con campos vacíos")
 	got, err := ordenJson.OrdenarDocumentoMetadata(metadata)
+
+	var actual ActualResult
 	if err != nil {
-		// Registro: Error en la función
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion": "OrdenarDocumentoMetadata falló",
-			"error":  err.Error(),
-		})
+		actual = ActualResult{Error: err.Error()}
+		globalLogger.RecordResult(testName, actual, "Fallido")
 		t.Fatal(err)
 	}
 
-	// Registro: Resultado obtenido
-	globalLogger.Log(testName, "DEBUG", map[string]interface{}{
-		"accion": "Resultado generado",
-		"output": got,
-	})
-
 	keys := extractKeys(got)
+	actual = ActualResult{
+		OrderedKeys: keys,
+		OutputJSON:  got,
+	}
+
+	status := "Completado"
 	if !reflect.DeepEqual(keys, expectedOrder) {
-		// Registro: Error de aserción
-		globalLogger.Log(testName, "ERROR", map[string]interface{}{
-			"accion":   "Campos vacíos no filtrados",
-			"esperado": expectedOrder,
-			"obtenido": keys,
-		})
+		status = "Fallido"
 		t.Errorf("Campos vacíos no filtrados. Claves: %v", keys)
 	}
 
-	// Registro: Conclusión del test
-	globalLogger.Log(testName, "INFO", map[string]interface{}{
-		"accion": "Test finalizado",
-		"estado": "Éxito",
-	})
+	globalLogger.RecordResult(testName, actual, status)
+	globalLogger.logs[testName].ExecutionTime = time.Since(startTime).String()
 }
 
 func BenchmarkOrdenarJSON(b *testing.B) {
@@ -998,6 +808,7 @@ func BenchmarkOrdenarJSON(b *testing.B) {
 		_, _ = ordenJson.OrdenarJSON(input)
 	}
 }
+
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // ~ HOOK PARA GUARDAR LOS LOGS AL FINAL ~
